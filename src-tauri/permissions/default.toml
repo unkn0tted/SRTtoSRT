@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/schema.json"
+
+[[permission]]
+identifier = "allow-post-chat-completion"
+description = "Allows the frontend to invoke the post_chat_completion command."
+commands.allow = ["post_chat_completion"]
+
+[default]
+description = "Default permission set for application commands."
+permissions = ["allow-post-chat-completion"]

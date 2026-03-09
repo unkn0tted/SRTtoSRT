@@ -1,0 +1,76 @@
+name: Tauri Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            artifact_name: subtitle-duet-linux
+          - runner: windows-latest
+            artifact_name: subtitle-duet-windows
+          - runner: macos-latest
+            artifact_name: subtitle-duet-macos
+
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_BUILD_JOBS: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri bundles
+        run: npx tauri build
+
+      - name: Create Windows portable zip
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/target/release/bundle/portable | Out-Null
+          Compress-Archive `
+            -Path src-tauri/target/release/subtitle-duet.exe `
+            -DestinationPath src-tauri/target/release/bundle/portable/subtitle-duet-windows-portable.zip `
+            -Force
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: src-tauri/target/release/bundle
+          if-no-files-found: error
