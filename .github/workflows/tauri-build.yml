@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    continue-on-error: ${{ matrix.runner == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/v') }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,3 +75,64 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: src-tauri/target/release/bundle
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: subtitle-duet-windows
+          path: release-artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: subtitle-duet-macos
+          path: release-artifacts/macos
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          while IFS= read -r -d '' file; do
+            cp "$file" release-assets/
+          done < <(
+            find release-artifacts/windows -type f \
+              \( -name '*.msi' -o -name '*.exe' -o -name '*.zip' \) \
+              -print0
+          )
+
+          while IFS= read -r -d '' file; do
+            cp "$file" release-assets/
+          done < <(
+            find release-artifacts/macos -type f \
+              \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg' \) \
+              -print0
+          )
+
+          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "No release assets were collected."
+            exit 1
+          fi
+
+          echo "Release assets:"
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            release-assets/*
+          fail_on_unmatched_files: true

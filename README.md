@@ -50,18 +50,28 @@ npm run tauri:build
 
 ## 推荐发布方式
 
-如果你不想把开发机和高性能 Windows 机器都装得很脏，推荐直接使用项目里的 GitHub Actions 矩阵构建：
+如果你不想把开发机和高性能 Windows 机器都装得很脏，推荐直接使用项目里的 GitHub Actions 矩阵构建和自动 Release：
 
 - 工作流文件：`.github/workflows/tauri-build.yml`
-- 触发方式：
-  - 手动触发 `workflow_dispatch`
-  - 推送 `v*` 标签时自动触发
-- 产物：
-  - Linux：`bundle` 目录下的 Linux 安装包 / AppImage
-  - Windows：`bundle` 目录下的安装包，额外附带 `portable/subtitle-duet-windows-portable.zip`
-  - macOS：`bundle` 目录下的 macOS 安装产物
+- 手动触发 `workflow_dispatch`：
+  - 构建 Linux / Windows / macOS
+  - 上传各平台 `bundle` 到 GitHub Actions artifacts
+- 推送 `v*` 标签（例如 `v0.1.0`）：
+  - 构建 Linux / Windows / macOS
+  - 自动创建同名 GitHub Release
+  - 自动上传 Windows / macOS 安装包到 Release 附件
+- Release 附件：
+  - Windows：安装包，额外附带 `portable/subtitle-duet-windows-portable.zip`
+  - macOS：Tauri 实际产出的 `.dmg` / `.app.tar.gz` / `.pkg`（如果有）
+- Linux：
+  - 仍保留在 Actions artifact 里，便于按需取用
 
-这样本地机器只负责开发和单端调试，三平台正式包交给各自 runner 产出。
+这样本地机器只负责开发和单端调试，正式包交给各自 runner 产出。
+
+注意：
+
+- 这个自动 Release 流程默认使用 GitHub 自带的 `GITHUB_TOKEN`，不需要额外 Secret
+- 当前还没有做 Windows 代码签名，也没有做 macOS 签名 / 公证；对外分发时系统仍可能提示安全警告
 
 ## 使用说明
 
