@@ -7,6 +7,8 @@
     "core:default",
     "dialog:default",
     "fs:default",
+    "fs:allow-app-read",
+    "fs:allow-app-write",
     "fs:allow-read-text-file",
     "fs:allow-remove",
     "fs:allow-write-text-file",

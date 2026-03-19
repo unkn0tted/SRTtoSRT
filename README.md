@@ -58,7 +58,7 @@ npm run tauri:build
 - 手动触发 `workflow_dispatch`：
   - 构建 Linux / Windows / macOS
   - 上传各平台 `bundle` 到 GitHub Actions artifacts
-- 推送 `v*` 标签（例如 `v0.1.0`）：
+- 推送 `v*` 标签（例如 `v0.1.1`）：
   - 先校验 Git tag 与项目版本号是否一致
   - 只构建 Windows / macOS
   - 自动创建同名 GitHub Release
@@ -93,8 +93,8 @@ npm run tauri:build
 3. 创建并推送 tag，例如：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 4. 等待 GitHub Actions 完成：
@@ -117,6 +117,15 @@ git push origin v0.1.0
 ```text
 原文件名.bilingual.srt
 ```
+
+## 本地数据说明
+
+- 应用设置会保存到应用数据目录中的 `settings.json`
+- 界面里会直接显示这个目录路径，并提供：
+  - `重置所有本地设置`
+  - `一键清理本地数据`
+- 翻译过程中会在输出目录旁边临时生成 `*.bilingual.checkpoint.json` 作为断点续跑文件
+- 成功导出后，checkpoint 文件会自动删除
 
 ## 兼容性说明
 

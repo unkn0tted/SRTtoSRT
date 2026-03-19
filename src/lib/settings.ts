@@ -1,6 +1,9 @@
+import { BaseDirectory, remove, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
+import { appLocalDataDir } from "@tauri-apps/api/path";
 import type { AppSettings } from "./types";
 
-const SETTINGS_KEY = "subtitle-duet.settings.v1";
+const LEGACY_SETTINGS_KEY = "subtitle-duet.settings.v1";
+const SETTINGS_FILE_NAME = "settings.json";
 
 const DEFAULT_PROMPT = [
   "You are translating subtitle segments for bilingual subtitles.",
@@ -24,6 +27,11 @@ export const defaultSettings: AppSettings = {
   englishMode: "preserve-source",
 };
 
+function joinPath(dir: string, fileName: string): string {
+  const separator = dir.includes("\\") ? "\\" : "/";
+  return `${dir.replace(/[\\/]+$/, "")}${separator}${fileName}`;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -38,43 +46,111 @@ function sanitizeNumeric(value: unknown, fallback: number, min: number, max: num
   return clamp(Math.round(parsed), min, max);
 }
 
-export function loadSettings(): AppSettings {
-  const raw = localStorage.getItem(SETTINGS_KEY);
+function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
+  return {
+    apiBaseUrl: parsed.apiBaseUrl?.trim() || defaultSettings.apiBaseUrl,
+    apiKey: parsed.apiKey ?? defaultSettings.apiKey,
+    model: parsed.model?.trim() || defaultSettings.model,
+    systemPrompt: parsed.systemPrompt?.trim() || defaultSettings.systemPrompt,
+    extraHeaders: parsed.extraHeaders ?? defaultSettings.extraHeaders,
+    batchSize: sanitizeNumeric(parsed.batchSize, defaultSettings.batchSize, 1, 100),
+    batchCharLimit: sanitizeNumeric(
+      parsed.batchCharLimit,
+      defaultSettings.batchCharLimit,
+      500,
+      15000,
+    ),
+    concurrency: sanitizeNumeric(parsed.concurrency, defaultSettings.concurrency, 1, 8),
+    timeoutSecs: sanitizeNumeric(parsed.timeoutSecs, defaultSettings.timeoutSecs, 10, 600),
+    englishMode:
+      parsed.englishMode === "translate-to-english"
+        ? "translate-to-english"
+        : defaultSettings.englishMode,
+  };
+}
+
+function loadLegacySettings(): AppSettings | null {
+  const raw = localStorage.getItem(LEGACY_SETTINGS_KEY);
 
   if (!raw) {
-    return { ...defaultSettings };
+    return null;
   }
 
   try {
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
-
-    return {
-      apiBaseUrl: parsed.apiBaseUrl?.trim() || defaultSettings.apiBaseUrl,
-      apiKey: parsed.apiKey ?? defaultSettings.apiKey,
-      model: parsed.model?.trim() || defaultSettings.model,
-      systemPrompt: parsed.systemPrompt?.trim() || defaultSettings.systemPrompt,
-      extraHeaders: parsed.extraHeaders ?? defaultSettings.extraHeaders,
-      batchSize: sanitizeNumeric(parsed.batchSize, defaultSettings.batchSize, 1, 100),
-      batchCharLimit: sanitizeNumeric(
-        parsed.batchCharLimit,
-        defaultSettings.batchCharLimit,
-        500,
-        15000,
-      ),
-      concurrency: sanitizeNumeric(parsed.concurrency, defaultSettings.concurrency, 1, 8),
-      timeoutSecs: sanitizeNumeric(parsed.timeoutSecs, defaultSettings.timeoutSecs, 10, 600),
-      englishMode:
-        parsed.englishMode === "translate-to-english"
-          ? "translate-to-english"
-          : defaultSettings.englishMode,
-    };
+    return normalizeSettings(parsed);
   } catch {
-    return { ...defaultSettings };
+    return null;
   }
 }
 
-export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+async function loadSettingsFromFile(): Promise<AppSettings | null> {
+  try {
+    const raw = await readTextFile(SETTINGS_FILE_NAME, {
+      baseDir: BaseDirectory.AppLocalData,
+    });
+    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    return normalizeSettings(parsed);
+  } catch {
+    return null;
+  }
+}
+
+export async function getLocalDataDirectory(): Promise<string> {
+  return appLocalDataDir();
+}
+
+export async function getSettingsFilePath(): Promise<string> {
+  return joinPath(await getLocalDataDirectory(), SETTINGS_FILE_NAME);
+}
+
+export async function loadSettings(): Promise<AppSettings> {
+  const fileSettings = await loadSettingsFromFile();
+
+  if (fileSettings) {
+    localStorage.removeItem(LEGACY_SETTINGS_KEY);
+    return fileSettings;
+  }
+
+  const legacySettings = loadLegacySettings();
+
+  if (legacySettings) {
+    await saveSettings(legacySettings);
+    localStorage.removeItem(LEGACY_SETTINGS_KEY);
+    return legacySettings;
+  }
+
+  return { ...defaultSettings };
+}
+
+export async function saveSettings(settings: AppSettings): Promise<void> {
+  const normalized = normalizeSettings(settings);
+
+  await writeTextFile(
+    SETTINGS_FILE_NAME,
+    JSON.stringify(normalized, null, 2),
+    {
+      baseDir: BaseDirectory.AppLocalData,
+    },
+  );
+
+  localStorage.removeItem(LEGACY_SETTINGS_KEY);
+}
+
+export async function resetStoredSettings(): Promise<void> {
+  try {
+    await remove(SETTINGS_FILE_NAME, {
+      baseDir: BaseDirectory.AppLocalData,
+    });
+  } catch {
+    // Ignore cleanup errors if the file does not exist yet.
+  }
+
+  localStorage.removeItem(LEGACY_SETTINGS_KEY);
+}
+
+export async function clearLocalData(): Promise<void> {
+  await resetStoredSettings();
 }
 
 export function parseExtraHeaders(input: string): Record<string, string> {

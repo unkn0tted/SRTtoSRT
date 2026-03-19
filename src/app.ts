@@ -4,7 +4,16 @@ import { loadTranslationCheckpoint, saveTranslationCheckpoint } from "./lib/chec
 import { describeError } from "./lib/errors";
 import { translateCueBatch } from "./lib/openai";
 import { buildBatches, buildSrtContent, parseSrt } from "./lib/srt";
-import { defaultSettings, loadSettings, parseExtraHeaders, saveSettings } from "./lib/settings";
+import {
+  clearLocalData,
+  defaultSettings,
+  getLocalDataDirectory,
+  getSettingsFilePath,
+  loadSettings,
+  parseExtraHeaders,
+  resetStoredSettings,
+  saveSettings,
+} from "./lib/settings";
 import { mapLimit } from "./lib/tasks";
 import type {
   AppSettings,
@@ -20,6 +29,8 @@ interface AppState {
   files: ParsedSubtitleFile[];
   tasks: FileTask[];
   outputDirectory: string;
+  localDataDirectory: string;
+  settingsFilePath: string;
   logs: LogEntry[];
   running: boolean;
 }
@@ -32,9 +43,13 @@ interface Refs {
   stats: HTMLDivElement;
   fileList: HTMLDivElement;
   logList: HTMLDivElement;
+  localDataPath: HTMLDivElement;
+  settingsPath: HTMLDivElement;
   selectFilesButton: HTMLButtonElement;
   clearFilesButton: HTMLButtonElement;
   chooseOutputButton: HTMLButtonElement;
+  resetSettingsButton: HTMLButtonElement;
+  clearLocalDataButton: HTMLButtonElement;
   startButton: HTMLButtonElement;
 }
 
@@ -46,10 +61,12 @@ function uid(prefix: string): string {
 
 function createInitialState(): AppState {
   return {
-    settings: loadSettings(),
+    settings: { ...defaultSettings },
     files: [],
     tasks: [],
     outputDirectory: "",
+    localDataDirectory: "",
+    settingsFilePath: "",
     logs: [
       {
         id: uid("log"),
@@ -154,6 +171,29 @@ function renderShell(root: HTMLDivElement): void {
               <textarea name="systemPrompt" rows="9"></textarea>
             </label>
           </form>
+
+          <section class="local-data-card">
+            <div class="panel-title-row">
+              <div>
+                <p class="panel-kicker">本地数据</p>
+                <h2>设置与清理</h2>
+              </div>
+            </div>
+
+            <div class="summary-card local-data-summary">
+              <span class="summary-label">数据目录</span>
+              <div class="summary-value" id="local-data-path">读取中...</div>
+              <span class="summary-label">设置文件</span>
+              <div class="summary-value" id="settings-path">读取中...</div>
+              <p class="data-note">
+                当前版本会把本地设置保存到上面的 `settings.json`。点击“清理本地数据”会删除这个文件，并清理旧版遗留的隐藏设置。
+              </p>
+              <div class="action-row local-data-actions">
+                <button class="button ghost" id="reset-settings-button" type="button">重置所有本地设置</button>
+                <button class="button ghost" id="clear-local-data-button" type="button">一键清理本地数据</button>
+              </div>
+            </div>
+          </section>
         </aside>
 
         <main class="panel panel-main">
@@ -367,6 +407,8 @@ function renderDynamic(state: AppState, refs: Refs): void {
       : `${totalCount} 个文件 / ${doneLines}/${totalLines} 条字幕 / 成功 ${successCount} / 失败 ${errorCount}`;
 
   refs.outputPath.textContent = state.outputDirectory || "未选择，开始前必须指定";
+  refs.localDataPath.textContent = state.localDataDirectory || "读取中...";
+  refs.settingsPath.textContent = state.settingsFilePath || "读取中...";
   refs.filesHint.textContent =
     state.files.length === 0
       ? "建议先选择 2-3 个样本文件测试 prompt 和接口稳定性，再跑整批任务。"
@@ -422,6 +464,8 @@ function renderDynamic(state: AppState, refs: Refs): void {
   refs.selectFilesButton.disabled = state.running;
   refs.clearFilesButton.disabled = state.running || state.files.length === 0;
   refs.chooseOutputButton.disabled = state.running;
+  refs.resetSettingsButton.disabled = state.running;
+  refs.clearLocalDataButton.disabled = state.running;
   refs.startButton.disabled = state.running || state.files.length === 0;
 
   Array.from(refs.form.elements).forEach((element) => {
@@ -787,6 +831,52 @@ async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
   renderDynamic(state, refs);
 }
 
+async function hydratePersistence(state: AppState, refs: Refs): Promise<void> {
+  try {
+    const [settings, localDataDirectory, settingsFilePath] = await Promise.all([
+      loadSettings(),
+      getLocalDataDirectory(),
+      getSettingsFilePath(),
+    ]);
+
+    state.settings = settings;
+    state.localDataDirectory = localDataDirectory;
+    state.settingsFilePath = settingsFilePath;
+    syncFormValues(refs, state.settings);
+    renderDynamic(state, refs);
+  } catch (error) {
+    pushLog(state, "error", describeError(error, "读取本地设置失败。"));
+    renderDynamic(state, refs);
+  }
+}
+
+function persistSettings(state: AppState, refs: Refs): void {
+  void saveSettings(state.settings).catch((error) => {
+    pushLog(state, "error", describeError(error, "保存本地设置失败。"));
+    renderDynamic(state, refs);
+  });
+}
+
+async function resetAllSettings(state: AppState, refs: Refs): Promise<void> {
+  await resetStoredSettings();
+  state.settings = { ...defaultSettings };
+  syncFormValues(refs, state.settings);
+  pushLog(state, "info", "已重置所有本地设置。");
+  renderDynamic(state, refs);
+}
+
+async function wipeLocalData(state: AppState, refs: Refs): Promise<void> {
+  await clearLocalData();
+  state.settings = { ...defaultSettings };
+  syncFormValues(refs, state.settings);
+  pushLog(
+    state,
+    "info",
+    `已清理本地数据。设置文件位置：${state.settingsFilePath || "未能读取"}`,
+  );
+  renderDynamic(state, refs);
+}
+
 function collectRefs(root: HTMLDivElement): Refs {
   const form = root.querySelector<HTMLFormElement>("#settings-form");
   const filesHint = root.querySelector<HTMLDivElement>("#files-hint");
@@ -795,9 +885,13 @@ function collectRefs(root: HTMLDivElement): Refs {
   const stats = root.querySelector<HTMLDivElement>("#stats");
   const fileList = root.querySelector<HTMLDivElement>("#file-list");
   const logList = root.querySelector<HTMLDivElement>("#log-list");
+  const localDataPath = root.querySelector<HTMLDivElement>("#local-data-path");
+  const settingsPath = root.querySelector<HTMLDivElement>("#settings-path");
   const selectFilesButton = root.querySelector<HTMLButtonElement>("#select-files-button");
   const clearFilesButton = root.querySelector<HTMLButtonElement>("#clear-files-button");
   const chooseOutputButton = root.querySelector<HTMLButtonElement>("#choose-output-button");
+  const resetSettingsButton = root.querySelector<HTMLButtonElement>("#reset-settings-button");
+  const clearLocalDataButton = root.querySelector<HTMLButtonElement>("#clear-local-data-button");
   const startButton = root.querySelector<HTMLButtonElement>("#start-button");
 
   if (
@@ -808,9 +902,13 @@ function collectRefs(root: HTMLDivElement): Refs {
     !stats ||
     !fileList ||
     !logList ||
+    !localDataPath ||
+    !settingsPath ||
     !selectFilesButton ||
     !clearFilesButton ||
     !chooseOutputButton ||
+    !resetSettingsButton ||
+    !clearLocalDataButton ||
     !startButton
   ) {
     throw new Error("UI 初始化失败。");
@@ -824,9 +922,13 @@ function collectRefs(root: HTMLDivElement): Refs {
     stats,
     fileList,
     logList,
+    localDataPath,
+    settingsPath,
     selectFilesButton,
     clearFilesButton,
     chooseOutputButton,
+    resetSettingsButton,
+    clearLocalDataButton,
     startButton,
   };
 }
@@ -836,7 +938,7 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.form.addEventListener("input", () => {
     state.settings = readSettingsFromForm(refs.form, state.settings);
-    saveSettings(state.settings);
+    persistSettings(state, refs);
   });
 
   refs.selectFilesButton.addEventListener("click", async () => {
@@ -863,6 +965,36 @@ function bindEvents(state: AppState, refs: Refs): void {
     clearFiles(state, refs);
   });
 
+  refs.resetSettingsButton.addEventListener("click", async () => {
+    if (!window.confirm("这会清空已保存的接口、模型、Prompt 和参数，并恢复默认配置。确定继续吗？")) {
+      return;
+    }
+
+    try {
+      await resetAllSettings(state, refs);
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "重置本地设置失败。"));
+      renderDynamic(state, refs);
+    }
+  });
+
+  refs.clearLocalDataButton.addEventListener("click", async () => {
+    if (
+      !window.confirm(
+        "这会删除应用保存的本地设置文件，并清理旧版遗留的隐藏设置。程序文件和导出的字幕不会被删除。确定继续吗？",
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await wipeLocalData(state, refs);
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "清理本地数据失败。"));
+      renderDynamic(state, refs);
+    }
+  });
+
   refs.startButton.addEventListener("click", async () => {
     if (state.running) {
       return;
@@ -885,4 +1017,5 @@ export function mountApp(root: HTMLDivElement): void {
 
   bindEvents(state, refs);
   renderDynamic(state, refs);
+  void hydratePersistence(state, refs);
 }
