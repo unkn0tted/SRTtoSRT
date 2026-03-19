@@ -38,6 +38,10 @@ body {
   min-height: 100vh;
 }
 
+#app {
+  width: 100%;
+}
+
 button,
 input,
 textarea {
@@ -79,7 +83,95 @@ textarea {
   width: 100%;
   min-height: 100vh;
   margin: 0;
+  padding: 54px 0 0;
+}
+
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 54px;
+  padding: 10px 14px 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(12, 17, 24, 0.94), rgba(12, 17, 24, 0.78)),
+    rgba(12, 17, 24, 0.92);
+  backdrop-filter: blur(18px);
+}
+
+.titlebar-drag {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 100%;
+  user-select: none;
+}
+
+.titlebar-drag * {
+  pointer-events: none;
+}
+
+.titlebar-brand {
+  display: grid;
+  gap: 2px;
+}
+
+.titlebar-badge {
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.titlebar-caption {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.titlebar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
   padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.titlebar-button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.titlebar-button.close:hover {
+  color: #fff0ef;
+  background: rgba(255, 111, 127, 0.22);
+  border-color: rgba(255, 111, 127, 0.34);
+}
+
+.titlebar-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .hero {
@@ -473,7 +565,25 @@ textarea {
 @media (max-width: 760px) {
   .shell {
     width: 100%;
-    padding: 0;
+    padding-top: 50px;
+  }
+
+  .titlebar {
+    height: 50px;
+    padding: 8px 10px 8px 12px;
+  }
+
+  .titlebar-caption {
+    display: none;
+  }
+
+  .titlebar-controls {
+    gap: 6px;
+  }
+
+  .titlebar-button {
+    width: 32px;
+    height: 32px;
   }
 
   .hero,

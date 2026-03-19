@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, remove, writeTextFile } from "@tauri-apps/plugin-fs";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadTranslationCheckpoint, saveTranslationCheckpoint } from "./lib/checkpoint";
 import { describeError } from "./lib/errors";
 import { translateCueBatch } from "./lib/openai";
@@ -37,6 +38,9 @@ interface AppState {
 }
 
 interface Refs {
+  titlebarMinimizeButton: HTMLButtonElement;
+  titlebarMaximizeButton: HTMLButtonElement;
+  titlebarCloseButton: HTMLButtonElement;
   form: HTMLFormElement;
   filesHint: HTMLDivElement;
   outputPath: HTMLDivElement;
@@ -56,6 +60,7 @@ interface Refs {
 }
 
 const rootId = "subtitle-duet-shell";
+const appWindow = getCurrentWindow();
 
 function uid(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -84,6 +89,54 @@ function createInitialState(): AppState {
 function renderShell(root: HTMLDivElement): void {
   root.innerHTML = `
     <div class="shell" id="${rootId}">
+      <header class="titlebar">
+        <div class="titlebar-drag" data-tauri-drag-region>
+          <div class="titlebar-brand">
+            <span class="titlebar-badge">Subtitle Duet</span>
+            <span class="titlebar-caption">Borderless Desktop Translator</span>
+          </div>
+        </div>
+
+        <div class="titlebar-controls">
+          <button
+            class="titlebar-button"
+            id="titlebar-minimize-button"
+            type="button"
+            aria-label="最小化窗口"
+            title="最小化"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 8.5h10v-1H3z" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            class="titlebar-button"
+            id="titlebar-maximize-button"
+            type="button"
+            aria-label="最大化或还原窗口"
+            title="最大化或还原"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 3h10v10H3zm1 1v8h8V4z" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            class="titlebar-button close"
+            id="titlebar-close-button"
+            type="button"
+            aria-label="关闭窗口"
+            title="关闭"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4.35 3.65 8 7.29l3.65-3.64.7.7L8.71 8l3.64 3.65-.7.7L8 8.71l-3.65 3.64-.7-.7L7.29 8 3.65 4.35z"
+                fill="currentColor"
+              />
+            </svg>
+          </button>
+        </div>
+      </header>
+
       <section class="hero">
         <div>
           <p class="eyebrow">Tauri / SRT-only / OpenAI-compatible API</p>
@@ -882,6 +935,9 @@ async function wipeLocalData(state: AppState, refs: Refs): Promise<void> {
 }
 
 function collectRefs(root: HTMLDivElement): Refs {
+  const titlebarMinimizeButton = root.querySelector<HTMLButtonElement>("#titlebar-minimize-button");
+  const titlebarMaximizeButton = root.querySelector<HTMLButtonElement>("#titlebar-maximize-button");
+  const titlebarCloseButton = root.querySelector<HTMLButtonElement>("#titlebar-close-button");
   const form = root.querySelector<HTMLFormElement>("#settings-form");
   const filesHint = root.querySelector<HTMLDivElement>("#files-hint");
   const outputPath = root.querySelector<HTMLDivElement>("#output-path");
@@ -900,6 +956,9 @@ function collectRefs(root: HTMLDivElement): Refs {
   const startButton = root.querySelector<HTMLButtonElement>("#start-button");
 
   if (
+    !titlebarMinimizeButton ||
+    !titlebarMaximizeButton ||
+    !titlebarCloseButton ||
     !form ||
     !filesHint ||
     !outputPath ||
@@ -921,6 +980,9 @@ function collectRefs(root: HTMLDivElement): Refs {
   }
 
   return {
+    titlebarMinimizeButton,
+    titlebarMaximizeButton,
+    titlebarCloseButton,
     form,
     filesHint,
     outputPath,
@@ -942,6 +1004,33 @@ function collectRefs(root: HTMLDivElement): Refs {
 
 function bindEvents(state: AppState, refs: Refs): void {
   syncFormValues(refs, state.settings);
+
+  refs.titlebarMinimizeButton.addEventListener("click", async () => {
+    try {
+      await appWindow.minimize();
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "最小化窗口失败。"));
+      renderDynamic(state, refs);
+    }
+  });
+
+  refs.titlebarMaximizeButton.addEventListener("click", async () => {
+    try {
+      await appWindow.toggleMaximize();
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "切换窗口大小失败。"));
+      renderDynamic(state, refs);
+    }
+  });
+
+  refs.titlebarCloseButton.addEventListener("click", async () => {
+    try {
+      await appWindow.close();
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "关闭窗口失败。"));
+      renderDynamic(state, refs);
+    }
+  });
 
   refs.form.addEventListener("input", () => {
     state.settings = readSettingsFromForm(refs.form, state.settings);
