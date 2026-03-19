@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { loadTranslationCheckpoint, saveTranslationCheckpoint } from "./lib/checkpoint";
 import { describeError } from "./lib/errors";
 import { translateCueBatch } from "./lib/openai";
 import { buildBatches, buildSrtContent, parseSrt } from "./lib/srt";
@@ -10,6 +11,8 @@ import type {
   FileTask,
   LogEntry,
   ParsedSubtitleFile,
+  SubtitleCue,
+  TranslationSegment,
 } from "./lib/types";
 
 interface AppState {
@@ -205,6 +208,105 @@ function removeExtension(name: string): string {
 function joinPath(dir: string, fileName: string): string {
   const separator = dir.includes("\\") ? "\\" : "/";
   return `${dir.replace(/[\\/]+$/, "")}${separator}${fileName}`;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function formatCueRange(batch: SubtitleCue[]): string {
+  const startIndex = batch[0]?.index;
+  const endIndex = batch[batch.length - 1]?.index;
+
+  return typeof startIndex === "number" && typeof endIndex === "number"
+    ? `字幕 ${startIndex}-${endIndex}`
+    : "字幕范围未知";
+}
+
+function isPermanentBatchError(message: string): boolean {
+  return [
+    "API Base URL 不能为空",
+    "Model 不能为空",
+    "Invalid Authorization header",
+    "Invalid header name",
+    "Invalid header value",
+    "HTTP 400",
+    "HTTP 401",
+    "HTTP 403",
+  ].some((keyword) => message.includes(keyword));
+}
+
+function isRetryableBatchError(message: string): boolean {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("http request failed") ||
+    normalized.includes("timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("connection") ||
+    normalized.includes("dns") ||
+    normalized.includes("429") ||
+    normalized.includes("500") ||
+    normalized.includes("502") ||
+    normalized.includes("503") ||
+    normalized.includes("504") ||
+    message.includes("缺少中文翻译") ||
+    message.includes("缺少英文行") ||
+    message.includes("模型没有返回合法 JSON") ||
+    message.includes("模型返回 JSON") ||
+    message.includes("无法从模型响应中提取文本内容") ||
+    message.includes("模型响应")
+  );
+}
+
+async function translateCueBatchWithRecovery(
+  batch: SubtitleCue[],
+  settings: AppSettings,
+  extraHeaders: Record<string, string>,
+  note: (message: string) => void,
+): Promise<TranslationSegment[]> {
+  const maxAttempts = batch.length === 1 ? 3 : 2;
+  const retryDelays = [1200, 2400];
+  let lastError: unknown;
+  let lastMessage = "未知错误";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await translateCueBatch(batch, settings, extraHeaders);
+    } catch (error) {
+      lastError = error;
+      lastMessage = describeError(error);
+
+      if (attempt < maxAttempts && isRetryableBatchError(lastMessage)) {
+        note(
+          `${formatCueRange(batch)} 第 ${attempt + 1}/${maxAttempts} 次尝试前重试：${lastMessage}`,
+        );
+        await wait(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)]);
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  if (batch.length > 1 && !isPermanentBatchError(lastMessage)) {
+    const mid = Math.ceil(batch.length / 2);
+    const left = batch.slice(0, mid);
+    const right = batch.slice(mid);
+
+    note(
+      `${formatCueRange(batch)} 仍然失败，自动拆分为 ${left.length}+${right.length} 条继续重试。`,
+    );
+
+    const leftResult = await translateCueBatchWithRecovery(left, settings, extraHeaders, note);
+    const rightResult = await translateCueBatchWithRecovery(right, settings, extraHeaders, note);
+
+    return [...leftResult, ...rightResult];
+  }
+
+  throw (lastError instanceof Error ? lastError : new Error(lastMessage));
 }
 
 function createTask(file: ParsedSubtitleFile): FileTask {
@@ -495,56 +597,130 @@ async function translateFile(
   refs: Refs,
   extraHeaders: Record<string, string>,
 ): Promise<void> {
+  const outputFileName = `${removeExtension(file.name)}.bilingual.srt`;
+  const outputPath = joinPath(state.outputDirectory, outputFileName);
+  const checkpointPath = joinPath(
+    state.outputDirectory,
+    `${removeExtension(file.name)}.bilingual.checkpoint.json`,
+  );
   const batches = buildBatches(
     file.cues,
     state.settings.batchSize,
     state.settings.batchCharLimit,
   );
+  const checkpoint = await loadTranslationCheckpoint(
+    checkpointPath,
+    file,
+    state.settings,
+    extraHeaders,
+  );
+  const translationsByIndex = new Map<number, TranslationSegment>();
+
+  for (const translation of checkpoint?.translations ?? []) {
+    translationsByIndex.set(translation.index, translation);
+  }
+
+  const restoredCount = translationsByIndex.size;
 
   updateTask(state, file.id, {
     status: "running",
-    completed: 0,
+    completed: restoredCount,
     total: file.cues.length,
-    message: `已拆分为 ${batches.length} 个批次`,
+    message:
+      restoredCount > 0
+        ? `已从断点恢复 ${restoredCount}/${file.cues.length}`
+        : `已拆分为 ${batches.length} 个批次`,
     outputPath: undefined,
   });
   renderDynamic(state, refs);
 
-  const translatedBatches = await mapLimit(
-    batches,
+  if (checkpoint && restoredCount > 0) {
+    pushLog(
+      state,
+      "info",
+      `${file.name} 已恢复断点 ${restoredCount}/${file.cues.length}，继续补剩余字幕。`,
+    );
+    renderDynamic(state, refs);
+  }
+
+  const pendingBatches = batches
+    .map((batch, originalIndex) => ({
+      originalIndex,
+      cues: batch.filter((cue) => !translationsByIndex.has(cue.index)),
+    }))
+    .filter((entry) => entry.cues.length > 0);
+
+  let checkpointWrite = Promise.resolve();
+  const persistCheckpoint = async (): Promise<void> => {
+    const snapshot = Array.from(translationsByIndex.values()).sort(
+      (left, right) => left.index - right.index,
+    );
+    checkpointWrite = checkpointWrite.then(() =>
+      saveTranslationCheckpoint(
+        checkpointPath,
+        file,
+        state.settings,
+        extraHeaders,
+        snapshot,
+      ),
+    );
+
+    await checkpointWrite;
+  };
+
+  await mapLimit(
+    pendingBatches,
     state.settings.concurrency,
-    async (batch, batchIndex) => {
+    async ({ originalIndex, cues }) => {
       try {
-        const result = await translateCueBatch(batch, state.settings, extraHeaders);
-        const task = state.tasks.find((item) => item.fileId === file.id);
+        const result = await translateCueBatchWithRecovery(
+          cues,
+          state.settings,
+          extraHeaders,
+          (message) => {
+            pushLog(
+              state,
+              "info",
+              `${file.name} 批次 ${originalIndex + 1}/${batches.length}：${message}`,
+            );
+            renderDynamic(state, refs);
+          },
+        );
+
+        for (const translation of result) {
+          translationsByIndex.set(translation.index, translation);
+        }
+
+        await persistCheckpoint();
 
         updateTask(state, file.id, {
           status: "running",
-          completed: (task?.completed ?? 0) + batch.length,
-          message: `已完成 ${Math.min((task?.completed ?? 0) + batch.length, file.cues.length)}/${file.cues.length}`,
+          completed: translationsByIndex.size,
+          message: `已完成 ${translationsByIndex.size}/${file.cues.length}（自动保存断点）`,
         });
         renderDynamic(state, refs);
 
         return result;
       } catch (error) {
-        const startIndex = batch[0]?.index;
-        const endIndex = batch[batch.length - 1]?.index;
-        const rangeLabel =
-          typeof startIndex === "number" && typeof endIndex === "number"
-            ? `字幕 ${startIndex}-${endIndex}`
-            : "字幕范围未知";
-
         throw new Error(
-          `批次 ${batchIndex + 1}/${batches.length}（${rangeLabel}）失败：${describeError(error)}`,
+          `批次 ${originalIndex + 1}/${batches.length}（${formatCueRange(cues)}）失败：${describeError(error)}`,
         );
       }
     },
   );
 
-  const translations = translatedBatches.flat().sort((a, b) => a.index - b.index);
+  await checkpointWrite;
+
+  const translations = file.cues.map((cue) => {
+    const translation = translationsByIndex.get(cue.index);
+
+    if (!translation) {
+      throw new Error(`字幕 ${cue.index} 缺少已保存的翻译结果。`);
+    }
+
+    return translation;
+  });
   const outputContent = buildSrtContent(file.cues, translations);
-  const outputFileName = `${removeExtension(file.name)}.bilingual.srt`;
-  const outputPath = joinPath(state.outputDirectory, outputFileName);
 
   await writeTextFile(outputPath, outputContent);
 
@@ -585,7 +761,12 @@ async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
     try {
       await translateFile(file, state, refs, extraHeaders);
     } catch (error) {
-      const message = describeError(error);
+      const task = state.tasks.find((item) => item.fileId === file.id);
+      const resumeHint =
+        task && task.completed > 0
+          ? ` 已保存 ${task.completed}/${task.total} 条断点，重新点击“开始翻译”可继续。`
+          : "";
+      const message = `${describeError(error)}${resumeHint}`;
       updateTask(state, file.id, {
         status: "error",
         message,
