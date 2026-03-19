@@ -188,7 +188,7 @@ function renderShell(root: HTMLDivElement): void {
               <span class="summary-label">设置文件</span>
               <div class="summary-value" id="settings-path">读取中...</div>
               <p class="data-note">
-                当前版本会把本地设置保存到上面的 `settings.json`。点击“清理本地数据”会删除这个文件，并清理旧版遗留的隐藏设置。
+                当前版本会把本地设置保存到上面的 <code>settings.json</code>。点击“清理本地数据”会删除这个文件，并清理旧版遗留的隐藏设置。
               </p>
               <div class="action-row local-data-actions">
                 <button class="button ghost" id="open-local-data-button" type="button">打开数据目录</button>
