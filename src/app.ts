@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, remove, writeTextFile } from "@tauri-apps/plugin-fs";
 import { loadTranslationCheckpoint, saveTranslationCheckpoint } from "./lib/checkpoint";
 import { describeError } from "./lib/errors";
 import { translateCueBatch } from "./lib/openai";
@@ -723,6 +723,12 @@ async function translateFile(
   const outputContent = buildSrtContent(file.cues, translations);
 
   await writeTextFile(outputPath, outputContent);
+
+  try {
+    await remove(checkpointPath);
+  } catch {
+    // Ignore cleanup errors so a finished export is still considered successful.
+  }
 
   updateTask(state, file.id, {
     status: "success",
