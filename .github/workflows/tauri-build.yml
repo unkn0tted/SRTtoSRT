@@ -10,8 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    continue-on-error: ${{ matrix.runner == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/v') }}
+  build-manual:
+    name: Build Manual Artifacts (${{ matrix.runner }})
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +57,109 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Generate Tauri icons
+        run: npm run icons:generate
+
+      - name: Build Tauri bundles
+        run: npx tauri build
+
+      - name: Create Windows portable zip
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/target/release/bundle/portable | Out-Null
+          Compress-Archive `
+            -Path src-tauri/target/release/subtitle-duet.exe `
+            -DestinationPath src-tauri/target/release/bundle/portable/subtitle-duet-windows-portable.zip `
+            -Force
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: src-tauri/target/release/bundle
+          if-no-files-found: error
+
+  validate-release-version:
+    name: Validate Release Version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ensure tag matches project version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version)")"
+          tauri_version="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version)")"
+          cargo_version="$(sed -nE 's/^version = "([^"]+)"$/\1/p' src-tauri/Cargo.toml | head -n1)"
+
+          if [[ -z "$cargo_version" ]]; then
+            echo "Failed to read version from src-tauri/Cargo.toml"
+            exit 1
+          fi
+
+          echo "Tag version:        $tag_version"
+          echo "package.json:       $package_version"
+          echo "tauri.conf.json:    $tauri_version"
+          echo "src-tauri/Cargo.toml: $cargo_version"
+
+          if [[ "$package_version" != "$tauri_version" || "$package_version" != "$cargo_version" ]]; then
+            echo "Project version files are out of sync."
+            exit 1
+          fi
+
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Git tag version does not match project version."
+            exit 1
+          fi
+
+  build-release:
+    name: Build Release Artifacts (${{ matrix.runner }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: validate-release-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            artifact_name: subtitle-duet-windows
+          - runner: macos-latest
+            artifact_name: subtitle-duet-macos
+
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_BUILD_JOBS: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate Tauri icons
+        run: npm run icons:generate
+
       - name: Build Tauri bundles
         run: npx tauri build
 
@@ -79,7 +183,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: build-release
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -130,7 +234,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
+          name: Subtitle Duet ${{ github.ref_name }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
