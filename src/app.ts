@@ -10,6 +10,7 @@ import {
   getLocalDataDirectory,
   getSettingsFilePath,
   loadSettings,
+  openDirectoryInFileManager,
   parseExtraHeaders,
   resetStoredSettings,
   saveSettings,
@@ -48,6 +49,7 @@ interface Refs {
   selectFilesButton: HTMLButtonElement;
   clearFilesButton: HTMLButtonElement;
   chooseOutputButton: HTMLButtonElement;
+  openLocalDataButton: HTMLButtonElement;
   resetSettingsButton: HTMLButtonElement;
   clearLocalDataButton: HTMLButtonElement;
   startButton: HTMLButtonElement;
@@ -189,6 +191,7 @@ function renderShell(root: HTMLDivElement): void {
                 当前版本会把本地设置保存到上面的 `settings.json`。点击“清理本地数据”会删除这个文件，并清理旧版遗留的隐藏设置。
               </p>
               <div class="action-row local-data-actions">
+                <button class="button ghost" id="open-local-data-button" type="button">打开数据目录</button>
                 <button class="button ghost" id="reset-settings-button" type="button">重置所有本地设置</button>
                 <button class="button ghost" id="clear-local-data-button" type="button">一键清理本地数据</button>
               </div>
@@ -464,6 +467,7 @@ function renderDynamic(state: AppState, refs: Refs): void {
   refs.selectFilesButton.disabled = state.running;
   refs.clearFilesButton.disabled = state.running || state.files.length === 0;
   refs.chooseOutputButton.disabled = state.running;
+  refs.openLocalDataButton.disabled = !state.localDataDirectory;
   refs.resetSettingsButton.disabled = state.running;
   refs.clearLocalDataButton.disabled = state.running;
   refs.startButton.disabled = state.running || state.files.length === 0;
@@ -890,6 +894,7 @@ function collectRefs(root: HTMLDivElement): Refs {
   const selectFilesButton = root.querySelector<HTMLButtonElement>("#select-files-button");
   const clearFilesButton = root.querySelector<HTMLButtonElement>("#clear-files-button");
   const chooseOutputButton = root.querySelector<HTMLButtonElement>("#choose-output-button");
+  const openLocalDataButton = root.querySelector<HTMLButtonElement>("#open-local-data-button");
   const resetSettingsButton = root.querySelector<HTMLButtonElement>("#reset-settings-button");
   const clearLocalDataButton = root.querySelector<HTMLButtonElement>("#clear-local-data-button");
   const startButton = root.querySelector<HTMLButtonElement>("#start-button");
@@ -907,6 +912,7 @@ function collectRefs(root: HTMLDivElement): Refs {
     !selectFilesButton ||
     !clearFilesButton ||
     !chooseOutputButton ||
+    !openLocalDataButton ||
     !resetSettingsButton ||
     !clearLocalDataButton ||
     !startButton
@@ -927,6 +933,7 @@ function collectRefs(root: HTMLDivElement): Refs {
     selectFilesButton,
     clearFilesButton,
     chooseOutputButton,
+    openLocalDataButton,
     resetSettingsButton,
     clearLocalDataButton,
     startButton,
@@ -963,6 +970,17 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.clearFilesButton.addEventListener("click", () => {
     clearFiles(state, refs);
+  });
+
+  refs.openLocalDataButton.addEventListener("click", async () => {
+    try {
+      await openDirectoryInFileManager(state.localDataDirectory);
+      pushLog(state, "info", `已打开数据目录：${state.localDataDirectory}`);
+      renderDynamic(state, refs);
+    } catch (error) {
+      pushLog(state, "error", describeError(error, "打开数据目录失败。"));
+      renderDynamic(state, refs);
+    }
   });
 
   refs.resetSettingsButton.addEventListener("click", async () => {

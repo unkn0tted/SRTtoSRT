@@ -58,7 +58,7 @@ npm run tauri:build
 - 手动触发 `workflow_dispatch`：
   - 构建 Linux / Windows / macOS
   - 上传各平台 `bundle` 到 GitHub Actions artifacts
-- 推送 `v*` 标签（例如 `v0.1.1`）：
+- 推送 `v*` 标签（例如 `v0.1.2`）：
   - 先校验 Git tag 与项目版本号是否一致
   - 只构建 Windows / macOS
   - 自动创建同名 GitHub Release
@@ -80,7 +80,7 @@ npm run tauri:build
   - `package.json`
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
-- 如果 tag 是 `v0.1.1`，那么上面三个文件里的版本号也必须都是 `0.1.1`
+- 如果 tag 是 `v0.1.2`，那么上面三个文件里的版本号也必须都是 `0.1.2`
 - 当前还没有做 Windows 代码签名，也没有做 macOS 签名 / 公证；对外分发时系统仍可能提示安全警告
 
 ## 发版步骤
@@ -93,8 +93,8 @@ npm run tauri:build
 3. 创建并推送 tag，例如：
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 4. 等待 GitHub Actions 完成：
@@ -122,6 +122,7 @@ git push origin v0.1.1
 
 - 应用设置会保存到应用数据目录中的 `settings.json`
 - 界面里会直接显示这个目录路径，并提供：
+  - `打开数据目录`
   - `重置所有本地设置`
   - `一键清理本地数据`
 - 翻译过程中会在输出目录旁边临时生成 `*.bilingual.checkpoint.json` 作为断点续跑文件
@@ -141,7 +142,7 @@ git push origin v0.1.1
 
 ## 当前已知限制
 
-- 还没有做任务取消和断点续跑
+- 还没有做任务取消；断点续跑目前仅支持同一输入文件、同一输出目录和同一套翻译参数继续执行
 - 对非常复杂的字幕格式标签没有专门保护逻辑
 - 没有内置术语表和上下文记忆
 - 当前这台 Linux 机器已经装好 Node / Rust 和 Tauri 依赖，但 `release/debug` 的 GTK 编译都被内存上限杀掉了，不适合继续作为正式打包机

@@ -1,6 +1,6 @@
 [package]
 name = "subtitle-duet"
-version = "0.1.1"
+version = "0.1.2"
 description = "Batch SRT translator powered by OpenAI-compatible APIs"
 authors = ["OpenAI Codex"]
 edition = "2021"

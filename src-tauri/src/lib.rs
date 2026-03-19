@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, path::PathBuf, process::Command, time::Duration};
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
@@ -114,12 +114,51 @@ async fn post_chat_completion(request: ChatCompletionRequest) -> Result<Value, S
         .map_err(|_| format!("The API did not return JSON: {}", truncate_for_error(&text, 800)))
 }
 
+#[tauri::command]
+fn open_directory(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+
+    if trimmed.is_empty() {
+        return Err("数据目录尚未加载完成。".into());
+    }
+
+    let directory = PathBuf::from(trimmed);
+
+    if !directory.exists() {
+        return Err(format!("数据目录不存在：{}", directory.display()));
+    }
+
+    if !directory.is_dir() {
+        return Err(format!("目标不是目录：{}", directory.display()));
+    }
+
+    let mut command = if cfg!(target_os = "windows") {
+        let mut explorer = Command::new("explorer");
+        explorer.arg(&directory);
+        explorer
+    } else if cfg!(target_os = "macos") {
+        let mut open = Command::new("open");
+        open.arg(&directory);
+        open
+    } else {
+        let mut open = Command::new("xdg-open");
+        open.arg(&directory);
+        open
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("打开数据目录失败：{error}"))?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![post_chat_completion])
+        .invoke_handler(tauri::generate_handler![post_chat_completion, open_directory])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
