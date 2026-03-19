@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { describeError, toError, truncateText } from "./errors";
 import type {
   AppSettings,
   EnglishMode,
@@ -93,14 +94,22 @@ function extractJsonPayload(raw: string): ParsedModelResponse {
   const lastBrace = candidate.lastIndexOf("}");
 
   if (firstBrace === -1 || lastBrace === -1 || firstBrace >= lastBrace) {
-    throw new Error("模型没有返回合法 JSON。");
+    throw new Error(`模型没有返回合法 JSON：${truncateText(candidate || raw, 240)}`);
   }
 
   const jsonSlice = candidate.slice(firstBrace, lastBrace + 1);
-  const parsed = JSON.parse(jsonSlice) as ParsedModelResponse;
+  let parsed: ParsedModelResponse;
+
+  try {
+    parsed = JSON.parse(jsonSlice) as ParsedModelResponse;
+  } catch (error) {
+    throw new Error(
+      `模型返回 JSON 解析失败：${describeError(error)}；原文片段：${truncateText(jsonSlice, 240)}`,
+    );
+  }
 
   if (!parsed || !Array.isArray(parsed.items)) {
-    throw new Error("模型返回 JSON 里缺少 items 数组。");
+    throw new Error(`模型返回 JSON 里缺少 items 数组：${truncateText(jsonSlice, 240)}`);
   }
 
   return parsed;
@@ -142,9 +151,13 @@ function buildUserPayload(items: SubtitleCue[], mode: EnglishMode): string {
 }
 
 async function postChatCompletion(payload: ChatCompletionPayload): Promise<Record<string, unknown>> {
-  return invoke<Record<string, unknown>>("post_chat_completion", {
-    request: payload,
-  });
+  try {
+    return await invoke<Record<string, unknown>>("post_chat_completion", {
+      request: payload,
+    });
+  } catch (error) {
+    throw toError(error, "请求模型接口失败。");
+  }
 }
 
 export async function translateCueBatch(

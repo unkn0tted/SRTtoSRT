@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { describeError } from "./lib/errors";
 import { translateCueBatch } from "./lib/openai";
 import { buildBatches, buildSrtContent, parseSrt } from "./lib/srt";
 import { defaultSettings, loadSettings, parseExtraHeaders, saveSettings } from "./lib/settings";
@@ -509,19 +510,36 @@ async function translateFile(
   });
   renderDynamic(state, refs);
 
-  const translatedBatches = await mapLimit(batches, state.settings.concurrency, async (batch) => {
-    const result = await translateCueBatch(batch, state.settings, extraHeaders);
-    const task = state.tasks.find((item) => item.fileId === file.id);
+  const translatedBatches = await mapLimit(
+    batches,
+    state.settings.concurrency,
+    async (batch, batchIndex) => {
+      try {
+        const result = await translateCueBatch(batch, state.settings, extraHeaders);
+        const task = state.tasks.find((item) => item.fileId === file.id);
 
-    updateTask(state, file.id, {
-      status: "running",
-      completed: (task?.completed ?? 0) + batch.length,
-      message: `已完成 ${Math.min((task?.completed ?? 0) + batch.length, file.cues.length)}/${file.cues.length}`,
-    });
-    renderDynamic(state, refs);
+        updateTask(state, file.id, {
+          status: "running",
+          completed: (task?.completed ?? 0) + batch.length,
+          message: `已完成 ${Math.min((task?.completed ?? 0) + batch.length, file.cues.length)}/${file.cues.length}`,
+        });
+        renderDynamic(state, refs);
 
-    return result;
-  });
+        return result;
+      } catch (error) {
+        const startIndex = batch[0]?.index;
+        const endIndex = batch[batch.length - 1]?.index;
+        const rangeLabel =
+          typeof startIndex === "number" && typeof endIndex === "number"
+            ? `字幕 ${startIndex}-${endIndex}`
+            : "字幕范围未知";
+
+        throw new Error(
+          `批次 ${batchIndex + 1}/${batches.length}（${rangeLabel}）失败：${describeError(error)}`,
+        );
+      }
+    },
+  );
 
   const translations = translatedBatches.flat().sort((a, b) => a.index - b.index);
   const outputContent = buildSrtContent(file.cues, translations);
@@ -546,7 +564,7 @@ async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
   try {
     extraHeaders = validateBeforeRun(state);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "配置校验失败。";
+    const message = describeError(error, "配置校验失败。");
     pushLog(state, "error", message);
     renderDynamic(state, refs);
     throw error;
@@ -567,7 +585,7 @@ async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
     try {
       await translateFile(file, state, refs, extraHeaders);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "未知错误";
+      const message = describeError(error);
       updateTask(state, file.id, {
         status: "error",
         message,
@@ -638,7 +656,7 @@ function bindEvents(state: AppState, refs: Refs): void {
     try {
       await chooseSubtitleFiles(state, refs);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "读取文件失败。";
+      const message = describeError(error, "读取文件失败。");
       pushLog(state, "error", message);
       renderDynamic(state, refs);
     }
@@ -648,7 +666,7 @@ function bindEvents(state: AppState, refs: Refs): void {
     try {
       await chooseOutputDirectory(state, refs);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "选择目录失败。";
+      const message = describeError(error, "选择目录失败。");
       pushLog(state, "error", message);
       renderDynamic(state, refs);
     }
