@@ -1,139 +1,125 @@
-# Subtitle Duet
+<div align="center">
+  <h1>Subtitle Duet</h1>
+  <p><strong>把单语 SRT，整理成可交付的双语字幕。</strong></p>
+  <p>基于 <code>Tauri v2 + TypeScript + Rust</code> 的本地桌面工具，批量读取字幕文件，调用 OpenAI 兼容接口，导出上中文 / 下英文的双语 <code>.srt</code>。</p>
 
-本地跨平台字幕翻译器，基于 `Tauri v2 + TypeScript + Vite`。
+  <p>
+    <img alt="Tauri v2" src="https://img.shields.io/badge/Tauri-v2-24C8DB?style=for-the-badge&logo=tauri&logoColor=white">
+    <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
+    <img alt="Rust" src="https://img.shields.io/badge/Rust-Native-000000?style=for-the-badge&logo=rust&logoColor=white">
+    <img alt="OpenAI Compatible" src="https://img.shields.io/badge/OpenAI-Compatible-0F172A?style=for-the-badge">
+  </p>
+</div>
 
-当前范围：
+---
 
-- 仅支持导入 `SRT`
-- 批量调用兼容 OpenAI `chat/completions` 接口
-- 导出 `上中文 / 下英文` 的双语 `SRT`
-- 支持用户自定义 `API Base URL / API Key / Model / 请求头 / Prompt`
+## 为什么是它
 
-## 当前实现
+`Subtitle Duet` 不是在线网页小工具，而是一个偏交付型的本地桌面应用：
 
-- 前端负责：
-  - 读取本地 SRT
-  - 解析与导出双语 SRT
-  - 批量队列、进度、日志、配置持久化
-- Tauri 原生层负责：
-  - 通过 Rust 发起 HTTP 请求，避开浏览器 CORS
+- 只做一件事：把 `SRT` 批量翻译成双语字幕
+- 所有文件读写都在本地完成
+- 通过 Tauri 原生层发起 HTTP 请求，避开浏览器 `CORS`
+- 支持断点续跑、进度日志、本地设置持久化
+- 支持无边框窗口和自定义标题栏，桌面体验更完整
 
-## 运行前提
+> 适合需要反复处理一批字幕、又不想把 API Key 和文件流程塞进浏览器的人。
 
-你本机需要先安装：
+## 功能亮点
 
-- `Node.js`
-- `Rust / Cargo`
-- Tauri 官方依赖
+| 模块 | 能力 |
+| --- | --- |
+| 输入 | 仅支持导入 `SRT`，避免格式分支过多导致流程变复杂 |
+| 翻译 | 批量调用兼容 OpenAI `chat/completions` 的接口 |
+| 输出 | 导出 `上中文 / 下英文` 的双语 `SRT` |
+| 英文模式 | 可保留原文，或要求模型补全英文行 |
+| 参数控制 | 支持自定义 `API Base URL / API Key / Model / 请求头 / Prompt` |
+| 任务管理 | 支持多文件队列、并发、进度显示和日志记录 |
+| 容错 | 输出目录旁生成 checkpoint，异常后可继续跑 |
+| 本地数据 | 设置保存到应用数据目录，可打开、重置、清理 |
 
-参考官方文档：
+## 工作方式
 
-- https://v2.tauri.app/start/prerequisites/
+### 前端负责
 
-## 安装依赖
+- 读取本地 `SRT`
+- 解析字幕时间轴与文本
+- 组织批处理任务
+- 展示日志、状态和进度
+- 导出双语字幕文件
 
-```bash
-npm install
+### Tauri 原生层负责
+
+- 用 Rust 发起 HTTP 请求
+- 规避浏览器环境的跨域限制
+- 提供本地目录打开等桌面能力
+- 接管无边框窗口的标题栏交互
+
+## 典型流程
+
+```text
+选择 SRT 文件
+  -> 配置 API / Model / Prompt
+  -> 选择英文行模式
+  -> 选择输出目录
+  -> 批量翻译
+  -> 导出 *.bilingual.srt
 ```
 
-## 开发模式
-
-```bash
-npm run tauri:dev
-```
-
-## 打包
-
-```bash
-npm run tauri:build
-```
-
-`npm run tauri:build` 和 `npm run tauri:dev` 会先根据 `src-tauri/icons/icon.png` 自动生成 Tauri 所需的 `icon.ico` 和 `icon.icns`，避免 Windows / macOS 打包时因为缺少平台图标而失败。
-
-## 推荐发布方式
-
-如果你不想把开发机和高性能 Windows 机器都装得很脏，推荐直接使用项目里的 GitHub Actions 矩阵构建和自动 Release：
-
-- 工作流文件：`.github/workflows/tauri-build.yml`
-- 手动触发 `workflow_dispatch`：
-  - 构建 Linux / Windows / macOS
-  - 上传各平台 `bundle` 到 GitHub Actions artifacts
-- 推送 `v*` 标签（例如 `v0.1.3`）：
-  - 先校验 Git tag 与项目版本号是否一致
-  - 只构建 Windows / macOS
-  - 自动创建同名 GitHub Release
-  - 自动生成 Release 更新日志
-  - 自动上传 Windows / macOS 安装包到 Release 附件
-- Release 附件：
-  - Windows：安装包，额外附带 `portable/subtitle-duet-windows-portable.zip`
-  - macOS：Tauri 实际产出的 `.dmg` / `.app.tar.gz` / `.pkg`（如果有）
-- Linux：
-  - 不参与正式 Release
-  - 如有需要，可通过手动触发工作流单独构建
-
-这样本地机器只负责开发和单端调试，正式包交给各自 runner 产出。
-
-注意：
-
-- 这个自动 Release 流程默认使用 GitHub 自带的 `GITHUB_TOKEN`，不需要额外 Secret
-- 发布前需要保证下面三个文件里的版本号完全一致：
-  - `package.json`
-  - `src-tauri/tauri.conf.json`
-  - `src-tauri/Cargo.toml`
-- 如果 tag 是 `v0.1.3`，那么上面三个文件里的版本号也必须都是 `0.1.3`
-- 当前还没有做 Windows 代码签名，也没有做 macOS 签名 / 公证；对外分发时系统仍可能提示安全警告
-
-## 发版步骤
-
-1. 修改版本号，确保下面三个文件一致：
-   - `package.json`
-   - `src-tauri/tauri.conf.json`
-   - `src-tauri/Cargo.toml`
-2. 提交并推送代码
-3. 创建并推送 tag，例如：
-
-```bash
-git tag v0.1.3
-git push origin v0.1.3
-```
-
-4. 等待 GitHub Actions 完成：
-   - 校验版本号
-   - 构建 Windows / macOS
-   - 自动创建 Release 并上传附件
-
-## 使用说明
-
-1. 填写 `API Base URL / API Key / Model`
-2. 选择英文行模式：
-   - `保留原文`：下行直接复用源字幕
-   - `强制输出英文`：模型返回中文和英文
-3. 选择多个 `SRT` 文件
-4. 选择输出目录
-5. 点击“开始翻译”
-
-输出文件会命名为：
+输出文件命名规则：
 
 ```text
 原文件名.bilingual.srt
 ```
 
-## 本地数据说明
+## 快速开始
 
-- 应用设置会保存到应用数据目录中的 `settings.json`
-- 界面里会直接显示这个目录路径，并提供：
-  - `打开数据目录`
-  - `重置所有本地设置`
-  - `一键清理本地数据`
-- 主窗口现在使用无边框窗口 + 自定义标题栏，窗口操作按钮由应用自己绘制
-- 翻译过程中会在输出目录旁边临时生成 `*.bilingual.checkpoint.json` 作为断点续跑文件
-- 成功导出后，checkpoint 文件会自动删除
+### 1. 环境准备
 
-## 兼容性说明
+你需要先安装：
 
-- 默认请求到 `${API Base URL}/chat/completions`
-- 如果你填写的 URL 本身已经以 `/chat/completions` 结尾，则会直接使用
-- 附加请求头需要是 JSON 对象，例如：
+- `Node.js`
+- `Rust / Cargo`
+- Tauri 官方依赖
+
+官方前置说明：
+
+- https://v2.tauri.app/start/prerequisites/
+
+### 2. 安装依赖
+
+```bash
+npm install
+```
+
+### 3. 启动开发模式
+
+```bash
+npm run tauri:dev
+```
+
+### 4. 构建桌面应用
+
+```bash
+npm run tauri:build
+```
+
+`npm run tauri:dev` 和 `npm run tauri:build` 都会先根据 [src-tauri/icons/icon.png](src-tauri/icons/icon.png) 自动生成平台图标，避免 Windows 或 macOS 因缺少 `icon.ico` / `icon.icns` 导致打包失败。
+
+## 使用说明
+
+1. 填写 `API Base URL / API Key / Model`
+2. 选择英文行模式
+3. 选择多个 `SRT` 文件
+4. 选择输出目录
+5. 点击“开始翻译”
+
+英文行模式说明：
+
+- `保留原文`：下行直接复用源字幕
+- `强制输出英文`：模型返回中文和英文
+
+附加请求头必须是 JSON 对象，例如：
 
 ```json
 {
@@ -141,11 +127,77 @@ git push origin v0.1.3
 }
 ```
 
-## 当前已知限制
+接口拼接规则：
 
-- 还没有做任务取消；断点续跑目前仅支持同一输入文件、同一输出目录和同一套翻译参数继续执行
-- 对非常复杂的字幕格式标签没有专门保护逻辑
+- 默认请求 `${API Base URL}/chat/completions`
+- 如果你填写的 URL 已经以 `/chat/completions` 结尾，则直接使用
+
+## 本地数据
+
+应用会把设置保存到应用数据目录中的 `settings.json`，界面中会显示实际路径，并提供这些操作：
+
+- 打开数据目录
+- 重置所有本地设置
+- 一键清理本地数据
+
+除此之外：
+
+- 翻译过程中会在输出目录旁边临时生成 `*.bilingual.checkpoint.json`
+- 成功导出后，checkpoint 文件会自动删除
+- 旧版 `localStorage` 设置会自动迁移到文件存储
+
+## 发布流程
+
+项目已经带好 GitHub Actions 矩阵构建和自动 Release 工作流：
+
+- 工作流文件：[.github/workflows/tauri-build.yml](.github/workflows/tauri-build.yml)
+- `workflow_dispatch`：
+  - 构建 Linux / Windows / macOS
+  - 上传各平台 bundle 到 Actions artifacts
+- 推送 `v*` 标签：
+  - 校验 Git tag 与项目版本号一致
+  - 构建 Windows / macOS
+  - 自动创建 GitHub Release
+  - 自动生成 Release Notes
+  - 自动上传安装包和便携包
+
+版本发布前，下面三个文件里的版本号必须完全一致：
+
+- [package.json](package.json)
+- [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json)
+- [src-tauri/Cargo.toml](src-tauri/Cargo.toml)
+
+示例：
+
+```bash
+git tag v0.1.3
+git push origin v0.1.3
+```
+
+## 当前限制
+
+- 还没有做任务取消
+- 断点续跑目前只适用于同一输入文件、同一输出目录、同一套翻译参数
+- 对复杂字幕标签暂时没有专门保护逻辑
 - 没有内置术语表和上下文记忆
-- 自定义标题栏在 Windows / Linux 逻辑上更直接，macOS 这边目前主要依赖 Tauri 官方能力，仍建议真机验证拖拽和窗口按钮手感
-- 当前这台 Linux 机器已经装好 Node / Rust 和 Tauri 依赖，但 `release/debug` 的 GTK 编译都被内存上限杀掉了，不适合继续作为正式打包机
-- macOS 对外分发若要减少系统安全警告，后续通常还要补签名 / 公证流程
+- 自定义标题栏在 Windows / Linux 更直接，macOS 仍建议真机验证交互手感
+- 当前 Linux 机器不适合作为正式 GTK 打包机
+- Windows 签名与 macOS 签名 / 公证流程暂未接入
+
+## 项目定位
+
+这个项目更像一把锋利的小工具，而不是一个“大而全”的字幕平台。
+
+它优先解决的是：
+
+- 本地文件安全感
+- OpenAI 兼容接口的灵活接入
+- 批量任务的稳定执行
+- 尽量少折腾的桌面交互体验
+
+如果你想把它继续往下做，下一步最值得加的通常是：
+
+- 任务取消
+- 术语表
+- 标签保护
+- 更完整的 macOS 原生体验校验
