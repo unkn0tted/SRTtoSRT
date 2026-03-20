@@ -170,8 +170,8 @@ npm run tauri:build
 示例：
 
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 ## 当前限制
