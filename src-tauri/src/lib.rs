@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf, process::Command, time::Duration}
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::Value;
+use tauri::WebviewWindow;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +13,15 @@ struct ChatCompletionRequest {
     payload: Value,
     extra_headers: Option<HashMap<String, String>>,
     timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum DesktopCommand {
+    OpenDirectory { path: String },
+    WindowMinimize,
+    WindowToggleMaximize,
+    WindowClose,
 }
 
 fn normalize_endpoint(endpoint: &str) -> Result<String, String> {
@@ -114,7 +124,6 @@ async fn post_chat_completion(request: ChatCompletionRequest) -> Result<Value, S
         .map_err(|_| format!("The API did not return JSON: {}", truncate_for_error(&text, 800)))
 }
 
-#[tauri::command]
 fn open_directory(path: String) -> Result<(), String> {
     let trimmed = path.trim();
 
@@ -153,12 +162,31 @@ fn open_directory(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn perform_desktop_command(window: WebviewWindow, command: DesktopCommand) -> Result<(), String> {
+    match command {
+        DesktopCommand::OpenDirectory { path } => open_directory(path),
+        DesktopCommand::WindowMinimize => window
+            .minimize()
+            .map_err(|error| format!("最小化窗口失败：{error}")),
+        DesktopCommand::WindowToggleMaximize => window
+            .toggle_maximize()
+            .map_err(|error| format!("切换窗口大小失败：{error}")),
+        DesktopCommand::WindowClose => window
+            .close()
+            .map_err(|error| format!("关闭窗口失败：{error}")),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![post_chat_completion, open_directory])
+        .invoke_handler(tauri::generate_handler![
+            post_chat_completion,
+            perform_desktop_command
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

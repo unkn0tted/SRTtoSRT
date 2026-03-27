@@ -20,6 +20,7 @@
   --error: #ff6f7f;
   --queued: #9cb4ff;
   --running: #ffc96a;
+  --stopped: #8ad0ff;
   --shadow: 0 22px 80px rgba(0, 0, 0, 0.28);
 }
 
@@ -291,10 +292,26 @@ textarea {
   border-color: transparent;
 }
 
+.status-badge[data-status="stopping"] {
+  color: #06111b;
+  background: var(--stopped);
+  border-color: transparent;
+}
+
 .settings-form {
   display: grid;
   gap: 16px;
   margin-top: 18px;
+}
+
+.run-note {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .local-data-card {
@@ -399,6 +416,15 @@ textarea {
   border: 1px solid var(--line);
 }
 
+.button.ghost.danger {
+  color: #ffd7db;
+  border-color: rgba(255, 111, 127, 0.28);
+}
+
+.button.ghost.danger:hover:not(:disabled) {
+  background: rgba(255, 111, 127, 0.14);
+}
+
 .button.tiny {
   padding: 0.55rem 0.85rem;
   justify-self: start;
@@ -472,6 +498,10 @@ textarea {
 
 .task-card[data-status="running"] {
   border-color: rgba(255, 201, 106, 0.42);
+}
+
+.task-card[data-status="stopped"] {
+  border-color: rgba(138, 208, 255, 0.38);
 }
 
 .task-head {

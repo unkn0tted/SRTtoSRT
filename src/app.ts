@@ -1,8 +1,13 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, remove, writeTextFile } from "@tauri-apps/plugin-fs";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadTranslationCheckpoint, saveTranslationCheckpoint } from "./lib/checkpoint";
 import { describeError } from "./lib/errors";
+import {
+  closeWindow,
+  minimizeWindow,
+  openDirectoryInFileManager,
+  toggleMaximizeWindow,
+} from "./lib/native/desktop";
 import { translateCueBatch } from "./lib/openai";
 import { buildBatches, buildSrtContent, parseSrt } from "./lib/srt";
 import {
@@ -11,7 +16,6 @@ import {
   getLocalDataDirectory,
   getSettingsFilePath,
   loadSettings,
-  openDirectoryInFileManager,
   parseExtraHeaders,
   resetStoredSettings,
   saveSettings,
@@ -26,15 +30,24 @@ import type {
   TranslationSegment,
 } from "./lib/types";
 
+type RunPhase = "idle" | "running" | "stopping";
+
+interface ActiveRun {
+  settings: AppSettings;
+  extraHeaders: Record<string, string>;
+  outputDirectory: string;
+}
+
 interface AppState {
   settings: AppSettings;
+  activeRun: ActiveRun | null;
   files: ParsedSubtitleFile[];
   tasks: FileTask[];
   outputDirectory: string;
   localDataDirectory: string;
   settingsFilePath: string;
   logs: LogEntry[];
-  running: boolean;
+  runPhase: RunPhase;
 }
 
 interface Refs {
@@ -42,6 +55,7 @@ interface Refs {
   titlebarMaximizeButton: HTMLButtonElement;
   titlebarCloseButton: HTMLButtonElement;
   form: HTMLFormElement;
+  runNote: HTMLDivElement;
   filesHint: HTMLDivElement;
   outputPath: HTMLDivElement;
   statusBadge: HTMLDivElement;
@@ -57,10 +71,10 @@ interface Refs {
   resetSettingsButton: HTMLButtonElement;
   clearLocalDataButton: HTMLButtonElement;
   startButton: HTMLButtonElement;
+  stopButton: HTMLButtonElement;
 }
 
 const rootId = "subtitle-duet-shell";
-const appWindow = getCurrentWindow();
 
 function uid(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -69,6 +83,7 @@ function uid(prefix: string): string {
 function createInitialState(): AppState {
   return {
     settings: { ...defaultSettings },
+    activeRun: null,
     files: [],
     tasks: [],
     outputDirectory: "",
@@ -82,7 +97,7 @@ function createInitialState(): AppState {
         timestamp: new Date().toLocaleTimeString(),
       },
     ],
-    running: false,
+    runPhase: "idle",
   };
 }
 
@@ -161,6 +176,7 @@ function renderShell(root: HTMLDivElement): void {
             </div>
             <div class="status-badge" id="status-badge"></div>
           </div>
+          <div class="run-note" id="run-note"></div>
 
           <form id="settings-form" class="settings-form">
             <label class="field">
@@ -261,6 +277,7 @@ function renderShell(root: HTMLDivElement): void {
             <div class="action-row">
               <button class="button ghost" id="clear-files-button" type="button">清空列表</button>
               <button class="button secondary" id="select-files-button" type="button">添加 SRT 文件</button>
+              <button class="button ghost danger" id="stop-button" type="button">停止并保存进度</button>
               <button class="button primary" id="start-button" type="button">开始翻译</button>
             </div>
           </div>
@@ -306,10 +323,21 @@ function joinPath(dir: string, fileName: string): string {
   return `${dir.replace(/[\\/]+$/, "")}${separator}${fileName}`;
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
+async function wait(ms: number, shouldStop?: () => boolean): Promise<void> {
+  const slice = 150;
+  let remaining = ms;
+
+  while (remaining > 0) {
+    if (shouldStop?.()) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, Math.min(slice, remaining));
+    });
+
+    remaining -= Math.min(slice, remaining);
+  }
 }
 
 function formatCueRange(batch: SubtitleCue[]): string {
@@ -357,11 +385,95 @@ function isRetryableBatchError(message: string): boolean {
   );
 }
 
+class StopRequestedError extends Error {
+  constructor() {
+    super("当前任务已按请求停止。");
+    this.name = "StopRequestedError";
+  }
+}
+
+function isBusy(state: AppState): boolean {
+  return state.runPhase !== "idle";
+}
+
+function isStopRequested(state: AppState): boolean {
+  return state.runPhase === "stopping";
+}
+
+function hasUnfinishedTasks(state: AppState): boolean {
+  return state.tasks.some((task) => task.status !== "success");
+}
+
+function hasStartedTasks(state: AppState): boolean {
+  return state.tasks.some(
+    (task) =>
+      task.status === "success" ||
+      task.status === "error" ||
+      task.status === "stopped" ||
+      task.completed > 0,
+  );
+}
+
+function getStartButtonLabel(state: AppState): string {
+  if (state.tasks.length === 0) {
+    return "开始翻译";
+  }
+
+  if (!hasUnfinishedTasks(state)) {
+    return "重新翻译全部文件";
+  }
+
+  return hasStartedTasks(state) ? "继续未完成任务" : "开始翻译";
+}
+
+function getRunNote(state: AppState): string {
+  const activeModel = state.activeRun?.settings.model;
+  const activeRunLabel = activeModel ? `${activeModel} 这组参数` : "这组参数";
+
+  if (state.runPhase === "stopping") {
+    return `正在等待当前批次收尾并保存断点。当前仍使用 ${activeRunLabel}；你现在修改的内容会在下一次继续时生效。`;
+  }
+
+  if (state.runPhase === "running") {
+    return `当前运行使用 ${activeRunLabel}。你现在修改的内容只会影响下一次开始或继续。`;
+  }
+
+  if (!hasUnfinishedTasks(state) && state.tasks.length > 0) {
+    return "当前队列已经完成。如果要用新参数重跑这一批文件，可以直接再次开始。";
+  }
+
+  if (hasStartedTasks(state)) {
+    return "当前队列里有未完成文件。点击“继续未完成任务”会跳过已完成文件，只处理剩余文件；如果你改了模型、Prompt 或英文模式，旧断点可能会从头开始。";
+  }
+
+  return "建议先用 2-3 个样本文件试跑，确认 prompt、模型和并发设置后，再翻整批任务。";
+}
+
+function formatTaskStatus(status: FileTask["status"]): string {
+  switch (status) {
+    case "idle":
+      return "待处理";
+    case "queued":
+      return "排队中";
+    case "running":
+      return "运行中";
+    case "stopped":
+      return "已暂停";
+    case "success":
+      return "已完成";
+    case "error":
+      return "失败";
+    default:
+      return status;
+  }
+}
+
 async function translateCueBatchWithRecovery(
   batch: SubtitleCue[],
   settings: AppSettings,
   extraHeaders: Record<string, string>,
   note: (message: string) => void,
+  shouldStop: () => boolean,
 ): Promise<TranslationSegment[]> {
   const maxAttempts = batch.length === 1 ? 3 : 2;
   const retryDelays = [1200, 2400];
@@ -369,22 +481,34 @@ async function translateCueBatchWithRecovery(
   let lastMessage = "未知错误";
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (shouldStop()) {
+      throw new StopRequestedError();
+    }
+
     try {
       return await translateCueBatch(batch, settings, extraHeaders);
     } catch (error) {
       lastError = error;
       lastMessage = describeError(error);
 
+      if (shouldStop()) {
+        throw new StopRequestedError();
+      }
+
       if (attempt < maxAttempts && isRetryableBatchError(lastMessage)) {
         note(
           `${formatCueRange(batch)} 第 ${attempt + 1}/${maxAttempts} 次尝试前重试：${lastMessage}`,
         );
-        await wait(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)]);
+        await wait(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)], shouldStop);
         continue;
       }
 
       break;
     }
+  }
+
+  if (shouldStop()) {
+    throw new StopRequestedError();
   }
 
   if (batch.length > 1 && !isPermanentBatchError(lastMessage)) {
@@ -396,8 +520,20 @@ async function translateCueBatchWithRecovery(
       `${formatCueRange(batch)} 仍然失败，自动拆分为 ${left.length}+${right.length} 条继续重试。`,
     );
 
-    const leftResult = await translateCueBatchWithRecovery(left, settings, extraHeaders, note);
-    const rightResult = await translateCueBatchWithRecovery(right, settings, extraHeaders, note);
+    const leftResult = await translateCueBatchWithRecovery(
+      left,
+      settings,
+      extraHeaders,
+      note,
+      shouldStop,
+    );
+    const rightResult = await translateCueBatchWithRecovery(
+      right,
+      settings,
+      extraHeaders,
+      note,
+      shouldStop,
+    );
 
     return [...leftResult, ...rightResult];
   }
@@ -453,6 +589,7 @@ function escapeHtml(input: string): string {
 function renderDynamic(state: AppState, refs: Refs): void {
   const successCount = state.tasks.filter((task) => task.status === "success").length;
   const errorCount = state.tasks.filter((task) => task.status === "error").length;
+  const stoppedCount = state.tasks.filter((task) => task.status === "stopped").length;
   const totalCount = state.tasks.length;
   const doneLines = state.tasks.reduce((sum, task) => sum + task.completed, 0);
   const totalLines = state.tasks.reduce((sum, task) => sum + task.total, 0);
@@ -460,18 +597,27 @@ function renderDynamic(state: AppState, refs: Refs): void {
   refs.stats.textContent =
     totalCount === 0
       ? "尚未添加文件"
-      : `${totalCount} 个文件 / ${doneLines}/${totalLines} 条字幕 / 成功 ${successCount} / 失败 ${errorCount}`;
+      : `${totalCount} 个文件 / ${doneLines}/${totalLines} 条字幕 / 成功 ${successCount} / 暂停 ${stoppedCount} / 失败 ${errorCount}`;
 
   refs.outputPath.textContent = state.outputDirectory || "未选择，开始前必须指定";
   refs.localDataPath.textContent = state.localDataDirectory || "读取中...";
   refs.settingsPath.textContent = state.settingsFilePath || "读取中...";
+  refs.runNote.textContent = getRunNote(state);
   refs.filesHint.textContent =
     state.files.length === 0
-      ? "建议先选择 2-3 个样本文件测试 prompt 和接口稳定性，再跑整批任务。"
+      ? "先添加 SRT 文件，再决定是开始新一轮还是继续未完成任务。"
       : `已载入 ${state.files.length} 个文件。当前仅支持 SRT，输出文件名会追加 .bilingual.srt。`;
 
-  refs.statusBadge.textContent = state.running ? "运行中" : "就绪";
-  refs.statusBadge.dataset.status = state.running ? "running" : "idle";
+  refs.statusBadge.textContent =
+    state.runPhase === "running"
+      ? "运行中"
+      : state.runPhase === "stopping"
+        ? "停止中"
+        : "就绪";
+  refs.statusBadge.dataset.status = state.runPhase;
+  refs.startButton.textContent = getStartButtonLabel(state);
+  refs.stopButton.textContent =
+    state.runPhase === "stopping" ? "停止中，等待当前批次收尾" : "停止并保存进度";
 
   refs.fileList.innerHTML =
     state.tasks.length === 0
@@ -488,7 +634,7 @@ function renderDynamic(state: AppState, refs: Refs): void {
                     <p class="task-path">${escapeHtml(task.path)}</p>
                   </div>
                   <div class="task-meta">
-                    <span class="pill">${task.status}</span>
+                    <span class="pill">${escapeHtml(formatTaskStatus(task.status))}</span>
                     <span>${task.completed}/${task.total}</span>
                   </div>
                 </div>
@@ -517,21 +663,14 @@ function renderDynamic(state: AppState, refs: Refs): void {
     )
     .join("");
 
-  refs.selectFilesButton.disabled = state.running;
-  refs.clearFilesButton.disabled = state.running || state.files.length === 0;
-  refs.chooseOutputButton.disabled = state.running;
+  refs.selectFilesButton.disabled = isBusy(state);
+  refs.clearFilesButton.disabled = isBusy(state) || state.files.length === 0;
+  refs.chooseOutputButton.disabled = isBusy(state);
   refs.openLocalDataButton.disabled = !state.localDataDirectory;
-  refs.resetSettingsButton.disabled = state.running;
-  refs.clearLocalDataButton.disabled = state.running;
-  refs.startButton.disabled = state.running || state.files.length === 0;
-
-  Array.from(refs.form.elements).forEach((element) => {
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
-      return;
-    }
-
-    element.disabled = state.running;
-  });
+  refs.resetSettingsButton.disabled = isBusy(state);
+  refs.clearLocalDataButton.disabled = isBusy(state);
+  refs.startButton.disabled = isBusy(state) || state.files.length === 0;
+  refs.stopButton.disabled = state.runPhase !== "running";
 }
 
 function syncFormValues(refs: Refs, settings: AppSettings): void {
@@ -676,45 +815,148 @@ function clearFiles(state: AppState, refs: Refs): void {
   renderDynamic(state, refs);
 }
 
-function validateBeforeRun(state: AppState): Record<string, string> {
-  if (!state.settings.apiBaseUrl.trim()) {
+function cloneSettings(settings: AppSettings): AppSettings {
+  return { ...settings };
+}
+
+function validateBeforeRun(
+  settings: AppSettings,
+  outputDirectory: string,
+): Record<string, string> {
+  if (!settings.apiBaseUrl.trim()) {
     throw new Error("API Base URL 不能为空。");
   }
 
-  if (!state.settings.model.trim()) {
+  if (!settings.model.trim()) {
     throw new Error("Model 不能为空。");
   }
 
-  if (!state.outputDirectory.trim()) {
+  if (!outputDirectory.trim()) {
     throw new Error("请先选择输出目录。");
   }
 
-  return parseExtraHeaders(state.settings.extraHeaders);
+  return parseExtraHeaders(settings.extraHeaders);
+}
+
+function createActiveRun(state: AppState): ActiveRun {
+  const settings = cloneSettings(state.settings);
+  const outputDirectory = state.outputDirectory.trim();
+  const extraHeaders = validateBeforeRun(settings, outputDirectory);
+
+  return {
+    settings,
+    extraHeaders,
+    outputDirectory,
+  };
+}
+
+function getRunPlan(state: AppState): {
+  filesToProcess: ParsedSubtitleFile[];
+  rerunAll: boolean;
+  skippedCount: number;
+  resumeMode: boolean;
+} {
+  const unfinishedIds = new Set(
+    state.tasks.filter((task) => task.status !== "success").map((task) => task.fileId),
+  );
+
+  if (unfinishedIds.size === 0) {
+    return {
+      filesToProcess: [...state.files],
+      rerunAll: true,
+      skippedCount: 0,
+      resumeMode: false,
+    };
+  }
+
+  return {
+    filesToProcess: state.files.filter((file) => unfinishedIds.has(file.id)),
+    rerunAll: false,
+    skippedCount: state.files.length - unfinishedIds.size,
+    resumeMode: hasStartedTasks(state),
+  };
+}
+
+function prepareTasksForRun(state: AppState, rerunAll: boolean): void {
+  state.tasks = state.tasks.map((task) => {
+    if (rerunAll) {
+      return {
+        ...task,
+        status: "queued",
+        completed: 0,
+        message: "排队中",
+        outputPath: undefined,
+      };
+    }
+
+    if (task.status === "success") {
+      return {
+        ...task,
+        message: "已完成，本轮继续时跳过",
+      };
+    }
+
+    return {
+      ...task,
+      status: "queued",
+      message: task.completed > 0 ? `排队继续 ${task.completed}/${task.total}` : "排队中",
+      outputPath: undefined,
+    };
+  });
+}
+
+function markPendingTasksStopped(state: AppState): void {
+  state.tasks = state.tasks.map((task) => {
+    if (task.status === "queued") {
+      return {
+        ...task,
+        status: "stopped",
+        message: task.completed > 0 ? `已暂停，保留 ${task.completed}/${task.total}` : "未开始，等待继续",
+      };
+    }
+
+    if (task.status === "running") {
+      return {
+        ...task,
+        status: "stopped",
+        message: task.completed > 0 ? `已暂停，保留 ${task.completed}/${task.total}` : "已暂停，等待继续",
+      };
+    }
+
+    return task;
+  });
+}
+
+function requestSoftStop(state: AppState, refs: Refs): void {
+  if (state.runPhase !== "running") {
+    return;
+  }
+
+  state.runPhase = "stopping";
+  pushLog(state, "info", "已请求停止。当前批次收尾后会保存断点并暂停剩余任务。");
+  renderDynamic(state, refs);
 }
 
 async function translateFile(
   file: ParsedSubtitleFile,
   state: AppState,
   refs: Refs,
-  extraHeaders: Record<string, string>,
+  run: ActiveRun,
 ): Promise<void> {
+  if (isStopRequested(state)) {
+    throw new StopRequestedError();
+  }
+
   const outputFileName = `${removeExtension(file.name)}.bilingual.srt`;
-  const outputPath = joinPath(state.outputDirectory, outputFileName);
+  const outputPath = joinPath(run.outputDirectory, outputFileName);
   const checkpointPath = joinPath(
-    state.outputDirectory,
+    run.outputDirectory,
     `${removeExtension(file.name)}.bilingual.checkpoint.json`,
   );
-  const batches = buildBatches(
-    file.cues,
-    state.settings.batchSize,
-    state.settings.batchCharLimit,
-  );
-  const checkpoint = await loadTranslationCheckpoint(
-    checkpointPath,
-    file,
-    state.settings,
-    extraHeaders,
-  );
+  const rememberedCompleted =
+    state.tasks.find((task) => task.fileId === file.id)?.completed ?? 0;
+  const batches = buildBatches(file.cues, run.settings.batchSize, run.settings.batchCharLimit);
+  const checkpoint = await loadTranslationCheckpoint(checkpointPath, file, run.settings, run.extraHeaders);
   const translationsByIndex = new Map<number, TranslationSegment>();
 
   for (const translation of checkpoint?.translations ?? []) {
@@ -742,6 +984,13 @@ async function translateFile(
       `${file.name} 已恢复断点 ${restoredCount}/${file.cues.length}，继续补剩余字幕。`,
     );
     renderDynamic(state, refs);
+  } else if (rememberedCompleted > 0) {
+    pushLog(
+      state,
+      "info",
+      `${file.name} 的旧断点在当前输出目录或当前输出内容参数下不可用，本次会从头开始重跑。`,
+    );
+    renderDynamic(state, refs);
   }
 
   const pendingBatches = batches
@@ -760,8 +1009,8 @@ async function translateFile(
       saveTranslationCheckpoint(
         checkpointPath,
         file,
-        state.settings,
-        extraHeaders,
+        run.settings,
+        run.extraHeaders,
         snapshot,
       ),
     );
@@ -771,13 +1020,17 @@ async function translateFile(
 
   await mapLimit(
     pendingBatches,
-    state.settings.concurrency,
+    run.settings.concurrency,
     async ({ originalIndex, cues }) => {
+      if (isStopRequested(state)) {
+        return [];
+      }
+
       try {
         const result = await translateCueBatchWithRecovery(
           cues,
-          state.settings,
-          extraHeaders,
+          run.settings,
+          run.extraHeaders,
           (message) => {
             pushLog(
               state,
@@ -786,7 +1039,12 @@ async function translateFile(
             );
             renderDynamic(state, refs);
           },
+          () => isStopRequested(state),
         );
+
+        if (result.length === 0) {
+          return result;
+        }
 
         for (const translation of result) {
           translationsByIndex.set(translation.index, translation);
@@ -803,14 +1061,35 @@ async function translateFile(
 
         return result;
       } catch (error) {
+        if (error instanceof StopRequestedError) {
+          return [];
+        }
+
         throw new Error(
           `批次 ${originalIndex + 1}/${batches.length}（${formatCueRange(cues)}）失败：${describeError(error)}`,
         );
       }
     },
+    () => isStopRequested(state),
   );
 
   await checkpointWrite;
+
+  if (isStopRequested(state) && translationsByIndex.size < file.cues.length) {
+    updateTask(state, file.id, {
+      status: "stopped",
+      completed: translationsByIndex.size,
+      message: `已停止，已保存 ${translationsByIndex.size}/${file.cues.length}，可继续`,
+      outputPath: undefined,
+    });
+    pushLog(
+      state,
+      "info",
+      `${file.name} 已停止，已保存 ${translationsByIndex.size}/${file.cues.length} 条断点。`,
+    );
+    renderDynamic(state, refs);
+    throw new StopRequestedError();
+  }
 
   const translations = file.cues.map((cue) => {
     const translation = translationsByIndex.get(cue.index);
@@ -842,10 +1121,10 @@ async function translateFile(
 }
 
 async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
-  let extraHeaders: Record<string, string>;
+  let run: ActiveRun;
 
   try {
-    extraHeaders = validateBeforeRun(state);
+    run = createActiveRun(state);
   } catch (error) {
     const message = describeError(error, "配置校验失败。");
     pushLog(state, "error", message);
@@ -853,39 +1132,63 @@ async function startBatchRun(state: AppState, refs: Refs): Promise<void> {
     throw error;
   }
 
-  state.running = true;
-  state.tasks = state.tasks.map((task) => ({
-    ...task,
-    status: "queued",
-    completed: 0,
-    message: "排队中",
-    outputPath: undefined,
-  }));
-  pushLog(state, "info", `开始批量翻译，共 ${state.files.length} 个文件。`);
+  const { filesToProcess, rerunAll, skippedCount, resumeMode } = getRunPlan(state);
+
+  state.activeRun = run;
+  state.runPhase = "running";
+  prepareTasksForRun(state, rerunAll);
+  pushLog(
+    state,
+    "info",
+    rerunAll
+      ? `开始重新翻译，共 ${filesToProcess.length} 个文件。`
+      : resumeMode
+        ? `继续未完成任务，共 ${filesToProcess.length} 个文件${
+            skippedCount > 0 ? `，跳过 ${skippedCount} 个已完成文件` : ""
+          }。`
+        : `开始批量翻译，共 ${filesToProcess.length} 个文件。`,
+  );
   renderDynamic(state, refs);
 
-  for (const file of state.files) {
-    try {
-      await translateFile(file, state, refs, extraHeaders);
-    } catch (error) {
-      const task = state.tasks.find((item) => item.fileId === file.id);
-      const resumeHint =
-        task && task.completed > 0
-          ? ` 已保存 ${task.completed}/${task.total} 条断点，重新点击“开始翻译”可继续。`
-          : "";
-      const message = `${describeError(error)}${resumeHint}`;
-      updateTask(state, file.id, {
-        status: "error",
-        message,
-      });
-      pushLog(state, "error", `${file.name} 失败：${message}`);
-      renderDynamic(state, refs);
+  try {
+    for (const file of filesToProcess) {
+      if (isStopRequested(state)) {
+        break;
+      }
+
+      try {
+        await translateFile(file, state, refs, run);
+      } catch (error) {
+        if (error instanceof StopRequestedError) {
+          break;
+        }
+
+        const task = state.tasks.find((item) => item.fileId === file.id);
+        const resumeHint =
+          task && task.completed > 0
+            ? ` 已保存 ${task.completed}/${task.total} 条断点，重新点击“继续未完成任务”可继续。`
+            : "";
+        const message = `${describeError(error)}${resumeHint}`;
+        updateTask(state, file.id, {
+          status: "error",
+          message,
+        });
+        pushLog(state, "error", `${file.name} 失败：${message}`);
+        renderDynamic(state, refs);
+      }
     }
-  }
 
-  state.running = false;
-  pushLog(state, "info", "本轮任务结束。");
-  renderDynamic(state, refs);
+    if (isStopRequested(state) && hasUnfinishedTasks(state)) {
+      markPendingTasksStopped(state);
+      pushLog(state, "info", "本轮已暂停。未完成文件会保留在列表里，调整参数后可继续。");
+    } else {
+      pushLog(state, "info", "本轮任务结束。");
+    }
+  } finally {
+    state.activeRun = null;
+    state.runPhase = "idle";
+    renderDynamic(state, refs);
+  }
 }
 
 async function hydratePersistence(state: AppState, refs: Refs): Promise<void> {
@@ -939,6 +1242,7 @@ function collectRefs(root: HTMLDivElement): Refs {
   const titlebarMaximizeButton = root.querySelector<HTMLButtonElement>("#titlebar-maximize-button");
   const titlebarCloseButton = root.querySelector<HTMLButtonElement>("#titlebar-close-button");
   const form = root.querySelector<HTMLFormElement>("#settings-form");
+  const runNote = root.querySelector<HTMLDivElement>("#run-note");
   const filesHint = root.querySelector<HTMLDivElement>("#files-hint");
   const outputPath = root.querySelector<HTMLDivElement>("#output-path");
   const statusBadge = root.querySelector<HTMLDivElement>("#status-badge");
@@ -954,12 +1258,14 @@ function collectRefs(root: HTMLDivElement): Refs {
   const resetSettingsButton = root.querySelector<HTMLButtonElement>("#reset-settings-button");
   const clearLocalDataButton = root.querySelector<HTMLButtonElement>("#clear-local-data-button");
   const startButton = root.querySelector<HTMLButtonElement>("#start-button");
+  const stopButton = root.querySelector<HTMLButtonElement>("#stop-button");
 
   if (
     !titlebarMinimizeButton ||
     !titlebarMaximizeButton ||
     !titlebarCloseButton ||
     !form ||
+    !runNote ||
     !filesHint ||
     !outputPath ||
     !statusBadge ||
@@ -974,7 +1280,8 @@ function collectRefs(root: HTMLDivElement): Refs {
     !openLocalDataButton ||
     !resetSettingsButton ||
     !clearLocalDataButton ||
-    !startButton
+    !startButton ||
+    !stopButton
   ) {
     throw new Error("UI 初始化失败。");
   }
@@ -984,6 +1291,7 @@ function collectRefs(root: HTMLDivElement): Refs {
     titlebarMaximizeButton,
     titlebarCloseButton,
     form,
+    runNote,
     filesHint,
     outputPath,
     statusBadge,
@@ -999,6 +1307,7 @@ function collectRefs(root: HTMLDivElement): Refs {
     resetSettingsButton,
     clearLocalDataButton,
     startButton,
+    stopButton,
   };
 }
 
@@ -1007,7 +1316,7 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.titlebarMinimizeButton.addEventListener("click", async () => {
     try {
-      await appWindow.minimize();
+      await minimizeWindow();
     } catch (error) {
       pushLog(state, "error", describeError(error, "最小化窗口失败。"));
       renderDynamic(state, refs);
@@ -1016,7 +1325,7 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.titlebarMaximizeButton.addEventListener("click", async () => {
     try {
-      await appWindow.toggleMaximize();
+      await toggleMaximizeWindow();
     } catch (error) {
       pushLog(state, "error", describeError(error, "切换窗口大小失败。"));
       renderDynamic(state, refs);
@@ -1025,7 +1334,7 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.titlebarCloseButton.addEventListener("click", async () => {
     try {
-      await appWindow.close();
+      await closeWindow();
     } catch (error) {
       pushLog(state, "error", describeError(error, "关闭窗口失败。"));
       renderDynamic(state, refs);
@@ -1059,6 +1368,10 @@ function bindEvents(state: AppState, refs: Refs): void {
 
   refs.clearFilesButton.addEventListener("click", () => {
     clearFiles(state, refs);
+  });
+
+  refs.stopButton.addEventListener("click", () => {
+    requestSoftStop(state, refs);
   });
 
   refs.openLocalDataButton.addEventListener("click", async () => {
@@ -1103,14 +1416,15 @@ function bindEvents(state: AppState, refs: Refs): void {
   });
 
   refs.startButton.addEventListener("click", async () => {
-    if (state.running) {
+    if (isBusy(state)) {
       return;
     }
 
     try {
       await startBatchRun(state, refs);
     } catch {
-      state.running = false;
+      state.activeRun = null;
+      state.runPhase = "idle";
       renderDynamic(state, refs);
     }
   });

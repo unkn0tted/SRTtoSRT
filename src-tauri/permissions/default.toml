@@ -6,10 +6,10 @@ description = "Allows the frontend to invoke the post_chat_completion command."
 commands.allow = ["post_chat_completion"]
 
 [[permission]]
-identifier = "allow-open-directory"
-description = "Allows the frontend to invoke the open_directory command."
-commands.allow = ["open_directory"]
+identifier = "allow-perform-desktop-command"
+description = "Allows the frontend to invoke the perform_desktop_command command."
+commands.allow = ["perform_desktop_command"]
 
 [default]
 description = "Default permission set for application commands."
-permissions = ["allow-post-chat-completion", "allow-open-directory"]
+permissions = ["allow-post-chat-completion", "allow-perform-desktop-command"]

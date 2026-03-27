@@ -32,6 +32,7 @@ export type TaskStatus =
   | "idle"
   | "queued"
   | "running"
+  | "stopped"
   | "success"
   | "error";
 

@@ -1,5 +1,4 @@
 import { BaseDirectory, remove, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir } from "@tauri-apps/api/path";
 import type { AppSettings } from "./types";
 
@@ -103,16 +102,6 @@ export async function getLocalDataDirectory(): Promise<string> {
 
 export async function getSettingsFilePath(): Promise<string> {
   return joinPath(await getLocalDataDirectory(), SETTINGS_FILE_NAME);
-}
-
-export async function openDirectoryInFileManager(path: string): Promise<void> {
-  const trimmed = path.trim();
-
-  if (!trimmed) {
-    throw new Error("数据目录尚未加载完成。");
-  }
-
-  await invoke("open_directory", { path: trimmed });
 }
 
 export async function loadSettings(): Promise<AppSettings> {
