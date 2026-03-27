@@ -169,9 +169,21 @@ fn perform_desktop_command(window: WebviewWindow, command: DesktopCommand) -> Re
         DesktopCommand::WindowMinimize => window
             .minimize()
             .map_err(|error| format!("最小化窗口失败：{error}")),
-        DesktopCommand::WindowToggleMaximize => window
-            .toggle_maximize()
-            .map_err(|error| format!("切换窗口大小失败：{error}")),
+        DesktopCommand::WindowToggleMaximize => {
+            let is_maximized = window
+                .is_maximized()
+                .map_err(|error| format!("读取窗口最大化状态失败：{error}"))?;
+
+            if is_maximized {
+                window
+                    .unmaximize()
+                    .map_err(|error| format!("还原窗口失败：{error}"))
+            } else {
+                window
+                    .maximize()
+                    .map_err(|error| format!("最大化窗口失败：{error}"))
+            }
+        }
         DesktopCommand::WindowClose => window
             .close()
             .map_err(|error| format!("关闭窗口失败：{error}")),
